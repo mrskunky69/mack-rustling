@@ -9,8 +9,13 @@ local isCowsAttached = false
 local rustlingPlayer = nil
 local sellPointMarker = nil
 local horses = {}
+local isMissionStarter = false
 
-
+local function NotifyPlayer(title, message, texture, txd, duration)
+    if isMissionStarter then
+        TriggerEvent('rNotify:NotifyLeft', title, message, texture or "generic_textures", txd or "tick", duration or 4000)
+    end
+end
 
 -- Utility functions
 local function GetRandomHeading()
@@ -86,7 +91,6 @@ local function SpawnBandits()
     SetModelAsNoLongerNeeded(horseHash)
 end
 
--- Mission logic functions
 local function AreBanditsDead()
     for _, bandit in ipairs(bandits) do
         if DoesEntityExist(bandit) and not IsEntityDead(bandit) then
@@ -98,7 +102,7 @@ end
 
 local function MakeCowFollow(cow, player)
     Citizen.CreateThread(function()
-        while DoesEntityExist(cow) and not IsEntityDead(cow) do
+        while DoesEntityExist(cow) and not IsEntityDead(cow) and isCowsAttached do
             local playerCoords = GetEntityCoords(player)
             local cowCoords = GetEntityCoords(cow)
             local distance = #(playerCoords - cowCoords)
@@ -115,22 +119,25 @@ local function MakeCowFollow(cow, player)
 end
 
 local function AttachCowsToNearestPlayer()
-    local playerPed = PlayerPedId()
-    rustlingPlayer = PlayerId()
-    
-    for _, cow in ipairs(cows) do
-        if DoesEntityExist(cow) and not IsEntityDead(cow) then
-            Citizen.InvokeNative(0x3AD51CAB001A6108, cow, true)  -- Set animal as being led
-            SetBlockingOfNonTemporaryEvents(cow, true)
-            TaskFollowToOffsetOfEntity(cow, playerPed, 0.0, -3.0, 0.0, 1.0, -1, 1.0, true)
-            
-            MakeCowFollow(cow, playerPed)
-            TriggerServerEvent("rustling:SetRustlingPlayer", GetPlayerServerId(rustlingPlayer))
+    if isMissionStarter then
+        local playerPed = PlayerPedId()
+        rustlingPlayer = PlayerId()
+        
+        for _, cow in ipairs(cows) do
+            if DoesEntityExist(cow) and not IsEntityDead(cow) then
+                Citizen.InvokeNative(0x3AD51CAB001A6108, cow, true)  -- Set animal as being led
+                SetBlockingOfNonTemporaryEvents(cow, true)
+                TaskFollowToOffsetOfEntity(cow, playerPed, 0.0, -3.0, 0.0, 1.0, -1, 1.0, true)
+                
+                MakeCowFollow(cow, playerPed)
+            end
         end
+        
+        isCowsAttached = true 
+        NotifyPlayer("The cows are now following you", "Lead them to the selling point.")
+        TriggerServerEvent("rustling:SetRustlingPlayer", GetPlayerServerId(rustlingPlayer))
+        TriggerServerEvent("rustling:NotifyPolice")
     end
-    
-    isCowsAttached = true 
-	TriggerEvent('rNotify:NotifyLeft', "The cows are now following you", "Lead them to the selling point.", "generic_textures", "tick", 4000)
 end
 
 local function IsNearSellingPoint()
@@ -156,6 +163,7 @@ local function IsNearSellingPoint()
     return false
 end
 
+
 Citizen.CreateThread(function()
     while true do
         Citizen.Wait(0)
@@ -173,17 +181,19 @@ local function StartMission()
         missionStarted = true
         SpawnCows()
         SpawnBandits()
-        TriggerEvent('rNotify:NotifyLeft', "Rustling", "Mission started! Defeat the bandits and rustle the cows.", "generic_textures", "tick", 4000)
+        NotifyPlayer("Rustling", "Mission started! Defeat the bandits and rustle the cows.")
         TriggerServerEvent("rustling:SetActiveMissionPlayer")
     end
 end
 
 RegisterNetEvent("rustling:StartMission")
 AddEventHandler("rustling:StartMission", function()
+    isMissionStarter = true
     StartMission()
 end)
 
 local function ResetMission()
+    -- Delete entities
     for _, cow in ipairs(cows) do
         if DoesEntityExist(cow) then
             DeleteEntity(cow)
@@ -194,23 +204,64 @@ local function ResetMission()
             DeleteEntity(bandit)
         end
     end
-    for _, horse in ipairs(horses) do  -- Add this loop to delete horses
+    for _, horse in ipairs(horses) do
         if DoesEntityExist(horse) then
             DeleteEntity(horse)
         end
     end
+
+    -- Clear blips
+    for _, blip in ipairs(cowBlips) do
+        RemoveBlip(blip)
+    end
+
+    -- Reset tables
     cows = {}
     bandits = {}
-    horses = {}  -- Reset the horses table
+    horses = {}
     cowBlips = {}
+
+    -- Reset flags and variables
     isCowsAttached = false
     missionStarted = false
     rustlingPlayer = nil
-    
+    isMissionStarter = false  -- Reset the mission starter flag
+
     -- Clear GPS route if it was added
     if Config.AddGPSRoute then
         ClearGpsMultiRoute()
     end
+
+    -- Remove any remaining markers or UI elements
+    if sellPointMarker then
+        RemoveBlip(sellPointMarker)
+        sellPointMarker = nil
+    end
+
+    -- Reset any timers or intervals
+    if resetTimerId then
+        clearTimeout(resetTimerId)
+        resetTimerId = nil
+    end
+
+    -- Clear any remaining tasks for the local player
+    local playerPed = PlayerPedId()
+    ClearPedTasks(playerPed)
+
+    -- Reset the camera if it was modified
+    RenderScriptCams(false, false, 0, true, true)
+
+    -- Restore the player's original state if necessary
+    SetEntityInvincible(playerPed, false)
+    SetEntityVisible(playerPed, true)
+
+    -- Notify the player that the mission has been reset
+    NotifyPlayer("Mission Reset", "The rustling mission has been reset.")
+
+    -- Trigger a server event to inform about the mission reset
+    TriggerServerEvent("rustling:MissionReset")
+
+    
 end
 
 
@@ -219,7 +270,7 @@ Citizen.CreateThread(function()
     while true do
         Citizen.Wait(0)  -- Changed to 0 for more responsive checks
         
-        if missionStarted then
+        if missionStarted and isMissionStarter then
             local playerPed = PlayerPedId()
             local playerCoords = GetEntityCoords(playerPed)
 
@@ -241,8 +292,7 @@ Citizen.CreateThread(function()
                     
                     if nearCow then
                         AttachCowsToNearestPlayer()
-                        TriggerServerEvent("rustling:NotifyPolice")
-                        TriggerEvent('rNotify:NotifyLeft', "All bandits are dead!", " Round up the Cows and take them to the Auction Yard.", "generic_textures", "tick", 4000)
+                        NotifyPlayer("Cows Attached", "Lead the cows to the selling point.")
                         
                         -- Add GPS route when cows are attached
                         if Config.AddGPSRoute then
@@ -265,55 +315,56 @@ Citizen.CreateThread(function()
                     end
                 end
             else
+                -- Existing selling logic
                 local sellPointDistance = #(playerCoords - Config.SellNPCLocation)
+                
+                print("Sell point distance: " .. sellPointDistance)
                 
                 if sellPointDistance <= Config.SellingRadius then
                     local allCowsNear = true
+                    local aliveCowCount = 0
                     for _, cow in ipairs(cows) do
                         if DoesEntityExist(cow) and not IsEntityDead(cow) then
                             local cowCoords = GetEntityCoords(cow)
                             local cowDistance = #(cowCoords - Config.SellNPCLocation)
                             if cowDistance > Config.CowSellDistance then
                                 allCowsNear = false
+                                print("Cow too far: " .. cowDistance)
                                 break
                             end
+                            aliveCowCount = aliveCowCount + 1
                         end
                     end
 
-                    if allCowsNear then
-                        TriggerServerEvent("rustling:SellCows", #cows)
-                        ResetMission()
-                        TriggerEvent('rNotify:NotifyLeft', "COMPLETED!", " COWS SOLD SUCCESSFULLY.", "generic_textures", "tick", 4000)
+                    print("All cows near: " .. tostring(allCowsNear))
+                    print("Alive cow count: " .. aliveCowCount)
+
+                    if allCowsNear and aliveCowCount > 0 then
+                        Draw3DText(Config.SellNPCLocation.x, Config.SellNPCLocation.y, Config.SellNPCLocation.z + 1.0, 
+                            "Selling " .. aliveCowCount .. " cows...")
                         
-                        -- Clear GPS route when mission is completed
-                        if Config.AddGPSRoute then
-                            ClearGpsMultiRoute()
-                        end
+                        print("Attempting to sell cows")
+                        TriggerServerEvent("rustling:SellCows", aliveCowCount)
+                        print("Sell event triggered")
+                        
+                        Citizen.Wait(1000)
+                        
+                        ResetMission()
+                        
+                        break
                     else
-                        TriggerEvent('rNotify:NotifyLeft', "Almost there!", "Make sure all cows are close to the sell point.", "generic_textures", "tick", 4000)
+                        if not allCowsNear then
+                            NotifyPlayer("Cows too far", "Some cows are too far from the sell point.")
+                        elseif aliveCowCount == 0 then
+                            NotifyPlayer("No cows", "There are no alive cows to sell.")
+                        else
+                            NotifyPlayer("Almost there!", "Make sure all cows are close to the sell point.")
+                        end
                     end
                 else
-                    -- Check if all cows are still following
-                    local allCowsFollowing = true
-                    for _, cow in ipairs(cows) do
-                        if DoesEntityExist(cow) and not IsEntityDead(cow) then
-                            local cowCoords = GetEntityCoords(cow)
-                            local distance = #(playerCoords - cowCoords)
-                            
-                            if distance > 10.0 then  -- Adjust this distance as needed
-                                allCowsFollowing = false
-                                break
-                            end
-                        end
-                    end
-                    
-                 
+                    NotifyPlayer("Get closer", "Move closer to the selling point.")
                 end
             end
-
-           
-
-            
         end
     end
 end)
@@ -366,10 +417,10 @@ end)
 
 RegisterNetEvent("rustling:SaleComplete")
 AddEventHandler("rustling:SaleComplete", function(reward)
-    TriggerEvent('rNotify:NotifyLeft', "COMPLETED!", string.format("COWS SOLD SUCCESSFULLY FOR $%d", reward), "generic_textures", "tick", 4000)
+    NotifyPlayer("COMPLETED!", string.format("COWS SOLD SUCCESSFULLY FOR $%d", reward))
     ResetMission()
     
-    -- Clear GPS route when mission is completed
+    -- Clear GPS route if it was added
     if Config.AddGPSRoute then
         ClearGpsMultiRoute()
     end

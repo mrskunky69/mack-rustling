@@ -2,6 +2,7 @@ local RSGCore = exports['rsg-core']:GetCoreObject()
 local missionActive = false
 local rustlingPlayer = nil
 local resetTimerId = nil
+local missionStarterPlayer = nil
 
 RegisterServerEvent("rustling:SetActiveMissionPlayer")
 AddEventHandler("rustling:SetActiveMissionPlayer", function()
@@ -12,8 +13,9 @@ RegisterServerEvent("rustling:RequestMissionStart")
 AddEventHandler("rustling:RequestMissionStart", function()
     if not missionActive then
         missionActive = true
-        print("Mission activated")
-        TriggerClientEvent("rustling:StartMission", -1) -- Broadcast to all clients
+        missionStarterPlayer = source
+        print("Mission activated by player " .. missionStarterPlayer)
+        TriggerClientEvent("rustling:StartMission", missionStarterPlayer) -- Only trigger for the starter
         TriggerEvent("rustling:StartMission") -- Trigger the reset timer
     else
         TriggerClientEvent('RSGCore:Notify', source, "A rustling mission is already in progress.", "error")
@@ -39,7 +41,7 @@ AddEventHandler("rustling:NotifyPolice", function()
     local Players = RSGCore.Functions.GetPlayers()
     for _, playerId in ipairs(Players) do
         local Player = RSGCore.Functions.GetPlayer(playerId)
-        if Player.PlayerData.job.type == Config.PoliceJobName then
+        if Player.PlayerData.job.type == Config.PoliceJobName and playerId ~= missionStarterPlayer then
             TriggerClientEvent('rNotify:ShowObjective', playerId, "Rustlers are in the Area", 4000)
         end
     end
@@ -63,6 +65,7 @@ AddEventHandler("rustling:SellCows", function(cowCount)
         rustlingPlayer = nil  -- Reset after successful sale
     end
 end)
+
 
 RegisterServerEvent("rustling:SetRustlingPlayer")
 AddEventHandler("rustling:SetRustlingPlayer", function(playerId)
